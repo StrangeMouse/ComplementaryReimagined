@@ -27,7 +27,17 @@ float sunVisibility2 = sunVisibility * sunVisibility;
 float shadowTimeVar1 = abs(sunVisibility - 0.5) * 2.0;
 float shadowTimeVar2 = shadowTimeVar1 * shadowTimeVar1;
 float shadowTime = shadowTimeVar2 * shadowTimeVar2;
-float farMinusNear = far - near;
+
+#ifdef DISTANT_HORIZONS
+    float customfar = dhFarPlane;
+    float customnear = dhNearPlane;
+#else
+    float customfar = far;
+    float customnear = near;
+#endif
+
+
+float farMinusNear = customfar - customnear;
 
 vec2 view = vec2(viewWidth, viewHeight);
 
@@ -44,7 +54,7 @@ vec2 view = vec2(viewWidth, viewHeight);
 
 //Common Functions//
 float GetLinearDepth(float depth) {
-    return (2.0 * near) / (far + near - depth * farMinusNear);
+    return (2.0 * customnear) / (customfar + customnear - depth * farMinusNear);
 }
 
 #if SSAO_QUALI > 0
@@ -53,7 +63,7 @@ float GetLinearDepth(float depth) {
         return pow2(vec2(cos(n), sin(n)) * x / s);
     }
 
-    float DoAmbientOcclusion(float z0, float linearZ0, float dither) {
+    float DoAmbientOcclusion(float z0, float linearZ0, float dither, sampler2D vardepthtex) {
         if (z0 < 0.56) return 1.0;
         float ao = 0.0;
 
@@ -65,12 +75,22 @@ float GetLinearDepth(float depth) {
             float scm = 0.6;
         #endif
 
-        #define SSAO_I_FACTOR 0.004
+        //-----------------------------------------------------------------------------------------------------------------------------------
+        #ifdef DISTANT_HORIZONS
+            //#define SSAO_I_FACTOR 0.01
+            #define SSAO_I_FACTOR 0.1
+        #else
+            //#define SSAO_I_FACTOR 0.004
+            #define SSAO_I_FACTOR 0.01
+        #endif
+        //#define SSAO_I_FACTOR 0.1
 
         float sampleDepth = 0.0, angle = 0.0, dist = 0.0;
         float fovScale = gbufferProjection[1][1];
-        float distScale = max(farMinusNear * linearZ0 + near, 3.0);
-        vec2 scale = vec2(scm / aspectRatio, scm) * fovScale / distScale;
+        //float distScale = max(farMinusNear * linearZ0 + customnear, 3.0);
+        float distScale = max(farMinusNear * linearZ0 + customnear, 10.0);
+        //float distScale = 1.0;
+        vec2 scale =(vec2(scm / aspectRatio, scm) * fovScale / distScale);
 
         for (int i = 1; i <= samples; i++) {
             vec2 offset = OffsetDist(i + dither, samples) * scale;
@@ -79,12 +99,12 @@ float GetLinearDepth(float depth) {
             vec2 coord1 = texCoord + offset;
             vec2 coord2 = texCoord - offset;
 
-            sampleDepth = GetLinearDepth(texture2D(depthtex0, coord1).r);
+            sampleDepth = GetLinearDepth(texture2D(vardepthtex, coord1).r);
             float aosample = farMinusNear * (linearZ0 - sampleDepth) * 2.0;
             angle = clamp(0.5 - aosample, 0.0, 1.0);
             dist = clamp(0.5 * aosample - 1.0, 0.0, 1.0);
 
-            sampleDepth = GetLinearDepth(texture2D(depthtex0, coord2).r);
+            sampleDepth = GetLinearDepth(texture2D(vardepthtex, coord2).r);
             aosample = farMinusNear * (linearZ0 - sampleDepth) * 2.0;
             angle += clamp(0.5 - aosample, 0.0, 1.0);
             dist += clamp(0.5 * aosample - 1.0, 0.0, 1.0);
@@ -100,7 +120,7 @@ float GetLinearDepth(float depth) {
 
 #ifdef TEMPORAL_FILTER
     float GetApproxDistance(float depth) {
-        return near * far / (far - depth * far);
+        return customnear * customfar / (customfar - depth * customfar);
     }
 
     // Previous frame reprojection from Chocapic13
@@ -184,6 +204,9 @@ float GetLinearDepth(float depth) {
 void main() {
     vec3 color = texelFetch(colortex0, texelCoord, 0).rgb;
     float z0 = texelFetch(depthtex0, texelCoord, 0).r;
+    // #ifdef DISTANT_HORIZONS
+    //     z0 = texelFetch(dhDepthTex, texelCoord, 0).r;
+    // #endif
 
     vec4 screenPos = vec4(texCoord, z0, 1.0);
     vec4 viewPos = gbufferProjectionInverse * (screenPos * 2.0 - 1.0);
@@ -231,7 +254,7 @@ void main() {
         #endif
 
         #if SSAO_QUALI > 0
-            float ssao = DoAmbientOcclusion(z0, linearZ0, dither);
+            float ssao = DoAmbientOcclusion(z0, linearZ0, dither, depthtex0);
         #else
             float ssao = 1.0;
         #endif
@@ -266,6 +289,7 @@ void main() {
         #endif
 
         color.rgb *= ssao;
+        //color.rgb = vec3(1.0, 0.0, 0.0);
 
         #ifdef PBR_REFLECTIONS
             float skyLightFactor = texture6.b;
@@ -351,7 +375,7 @@ void main() {
                     blendFactor *= mix(1.0, exp(-velocity) * 0.5 + 0.5, smoothnessD);
 
                     // Reduce blending if depth changed
-                    float linearZDif = abs(GetLinearDepth(texture2D(colortex1, oppositePreCoord).r) - linearZ0) * far;
+                    float linearZDif = abs(GetLinearDepth(texture2D(colortex1, oppositePreCoord).r) - linearZ0) * customfar;
                     blendFactor *= max0(2.0 - linearZDif) * 0.5;
                     //color = mix(vec3(1,1,0), color, max0(2.0 - linearZDif) * 0.5);
 
@@ -399,6 +423,7 @@ void main() {
     } else { // Sky
         #ifdef DISTANT_HORIZONS
             float z0DH = texelFetch(dhDepthTex, texelCoord, 0).r;
+            float ssaoDHz0 = z0DH;
             if (z0DH < 1.0) { // Distant Horizons Chunks
                 vec4 screenPosDH = vec4(texCoord, z0DH, 1.0);
                 vec4 viewPosDH = dhProjectionInverse * (screenPosDH * 2.0 - 1.0);
@@ -413,6 +438,43 @@ void main() {
                 #endif
                 
                 DoFog(color.rgb, skyFade, lViewPos, playerPos, VdotU, VdotS, dither);
+
+                #if SSAO_QUALI > 0 || defined WORLD_OUTLINE || defined TEMPORAL_FILTER
+                    float linearZ0 = GetLinearDepth(ssaoDHz0);
+                #endif
+
+                #if SSAO_QUALI > 0
+                    float ssao = DoAmbientOcclusion(ssaoDHz0, linearZ0, dither, dhDepthTex);
+                    //ssao = 0.0;
+                #else
+                    float ssao = 0.0;
+                #endif
+                color.rgb *= ssao;
+
+
+
+
+                // vec4 gbuffer_data_0 = texelFetch(colortex1, texelCoord, 0);
+		        // vec3 world_normal = decode_unit_vector(unpack_unorm_2x8(gbuffer_data_0.z));
+                //vec3 normal = texelFetch(dhDepthTex, texelCoord, 0).xyr;  // Sample normal
+                //color = normal;// * 0.5 + 0.5;  // Visualize the normal (assuming it's in the range [-1, 1])
+                //color = vec3(0.5, 0.0, 0.0); // Set color to red for debugging
+
+
+
+                //DEBUG
+                // if (ssao < 0.1) {
+                //     color.rgb = vec3(1.0, 0.0, 0.0);  // Red for customnear
+                // }   else if (ssao < 0.3) {
+                //     color.rgb = vec3(0.0, 1.0, 0.0);  // Green for medium-customnear
+                // } else if (ssao == 1.0) {
+                //     color.rgb = vec3(0.0, 0.0, 1.0);  // Blue for mid-range
+                // } else {
+                //     color.rgb = vec3(1.0, 1.0, 0.0);  // Yellow for customfar
+                // }
+
+
+
             } else { // Start of Actual Sky
         #endif
 
@@ -538,7 +600,7 @@ void main() {
                 vec2 absCamPosXZ = abs(cameraPosition.xz);
                 float maxCamPosXZ = max(absCamPosXZ.x, absCamPosXZ.y);
 
-                if (gl_Fog.start / far > 0.5 || maxCamPosXZ > 350.0) vlFactor = max(vlFactor - OSIEBCA*2, 0.0);
+                if (gl_Fog.start / customfar > 0.5 || maxCamPosXZ > 350.0) vlFactor = max(vlFactor - OSIEBCA*2, 0.0);
                 else                                                 vlFactor = min(vlFactor + OSIEBCA*2, 1.0);
             }
         #endif

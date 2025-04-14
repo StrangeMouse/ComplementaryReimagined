@@ -122,6 +122,9 @@ uniform vec3 previousCameraPositionFract;
     
     uniform sampler2D dhDepthTex;
     uniform sampler2D dhDepthTex1;
+
+    uniform float dhNearPlane;
+    uniform float dhFarPlane;
 #endif
 
 #if COLORED_LIGHTING_INTERNAL > 0
